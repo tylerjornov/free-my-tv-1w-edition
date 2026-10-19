@@ -196,6 +196,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private boolean okDown, backDown;
 
     private Paint labelPaint, metaPaint, clockPaint, buttonPaint, capsuleText, tipPaint, quotePaint, staleQuote;
+    private final List<String> avLines = new ArrayList<>();
+    private String avMetar = "", avTaf = "";
+    private float avWidth;
+    private Paint avPaint;
     private Paint rowTitle, drawerLabel, cardTitle, cardText, cardDim, cardDimRight, bigTemp, hourPaint, hourTemp;
     private Paint pricePaint, changePaint, sheetTitle;
     private TextPaint titlePaint, gridLabel, toastPaint;
@@ -508,6 +512,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         cardDimRight = Ui.text(Ui.medium, 21 * k, 0x99FFFFFF);
         cardDimRight.setTextAlign(Paint.Align.RIGHT);
         bigTemp = Ui.numbers(Ui.light, 100 * k, 0xFFFFFFFF);
+        avPaint = Ui.numbers(Ui.medium, 19 * k, 0xADFFFFFF);
         hourPaint = Ui.numbers(Ui.medium, 22 * k, 0xADFFFFFF);
         hourPaint.setTextAlign(Paint.Align.CENTER);
         hourTemp = Ui.numbers(Ui.medium, 26 * k, 0xF2FFFFFF);
@@ -1277,6 +1282,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         cardDimRight.setColor(tone(L_FAINT, 0x99FFFFFF));
         bigTemp.setColor(drawerInk(1));
         hourPaint.setColor(tone(L_DIM, 0xADFFFFFF));
+        avPaint.setColor(drawerInk(0.9f));
         hourTemp.setColor(drawerInk(0.95f));
         pricePaint.setColor(drawerInk(0.95f));
         float titleBase = ROW_TITLE * k;
@@ -1346,6 +1352,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         fill.setColor(tone(0x1A000000, 0x24FFFFFF));
         c.drawRoundRect(split - k, r.top + 34 * k, split + k, r.bottom - 34 * k, k, k, fill);
         float hx = split + 30 * k, hw = (r.right - 30 * k - hx) / 6;
+        if (!HomeData.AERODROME.isEmpty()) {
+            drawAviation(c, hx, r.right - 34 * k, r.top);
+            return;
+        }
         for (int i = 0; i < wx.hours.size() && i < 6; i++) {
             float hc = hx + hw * (i + 0.5f);
             c.drawText(HomeData.hour(wx.hours.get(i)), hc, r.top + 96 * k, hourPaint);
@@ -1355,6 +1365,45 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float sx = hx, base = r.top + 258 * k;
         if (wx.sunrise != 0) sx = sunItem(c, "sunrise", Ui.tr("Nascer ", "Sunrise ") + Ui.time(wx.sunrise), sx, base) + 36 * k;
         if (wx.sunset != 0) sunItem(c, "sunset", Ui.tr("Pôr do sol ", "Sunset ") + Ui.time(wx.sunset), sx, base);
+    }
+
+    /** METAR and TAF of the configured aerodrome, wrapped to the card (lines are rebuilt only when the text or width changes). */
+    private void drawAviation(Canvas c, float x, float right, float top) {
+        String m = data.metar, t = data.taf;
+        if (m != avMetar || t != avTaf || right - x != avWidth) {
+            avMetar = m;
+            avTaf = t;
+            avWidth = right - x;
+            avLines.clear();
+            avLines.add(HomeData.AERODROME + " METAR");
+            wrap(m.isEmpty() ? Ui.tr("sem dados", "no data") : m, avWidth, 3);
+            avLines.add(" TAF");
+            wrap(t.isEmpty() ? Ui.tr("sem dados", "no data") : t, avWidth, 5);
+        }
+        float y = top + 58 * k, line = 27 * k;
+        for (int i = 0; i < avLines.size(); i++) {
+            String s = avLines.get(i);
+            boolean head = s.endsWith("METAR") || s.equals(" TAF");
+            c.drawText(head ? s.trim() : s, x, y + (head && i > 0 ? 8 * k : 0), head ? cardDim : avPaint);
+            y += head && i > 0 ? line + 8 * k : line;
+        }
+    }
+
+    private void wrap(String text, float width, int maxLines) {
+        int start = 0, lines = 0;
+        while (start < text.length()) {
+            int n = avPaint.breakText(text, start, text.length(), true, width, null);
+            int end = start + n;
+            if (end < text.length()) {
+                int sp = text.lastIndexOf(' ', end);
+                if (sp > start) end = sp;
+            }
+            boolean last = ++lines == maxLines && end < text.length();
+            avLines.add(last ? text.substring(start, Math.max(start, end - 1)) + "…" : text.substring(start, end));
+            if (last) return;
+            start = end;
+            while (start < text.length() && text.charAt(start) == ' ') start++;
+        }
     }
 
     private float sunItem(Canvas c, String symbol, String label, float x, float base) {

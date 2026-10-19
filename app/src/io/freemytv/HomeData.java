@@ -38,7 +38,11 @@ final class HomeData {
             + "&longitude=" + Config.LONGITUDE
             + "&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
             + "&hourly=temperature_2m,weather_code,is_day&timezone=auto&forecast_days=2";
-    private static final long PRICES_EVERY = 5 * 60_000L, WEATHER_EVERY = 30 * 60_000L;
+    /** ICAO code from config.properties; empty (no METAR/TAF) unless it is 3-4 letters or digits. */
+    static final String AERODROME = Config.AERODROME.trim().toUpperCase(Locale.ROOT).matches("[A-Z0-9]{3,4}")
+            ? Config.AERODROME.trim().toUpperCase(Locale.ROOT) : "";
+    private static final String AVIATION_URL = "https://aviationweather.gov/api/data/%s?format=raw&ids=" + AERODROME;
+    private static final long PRICES_EVERY = 5 * 60_000L, WEATHER_EVERY = 30 * 60_000L, AVIATION_EVERY = 10 * 60_000L;
     private static final Locale PT = new Locale("pt", "BR");
 
     interface Listener { void onData(); }
@@ -80,14 +84,16 @@ final class HomeData {
     final double[] prices = {Double.NaN, Double.NaN, Double.NaN, Double.NaN};
     /** 24 h change (%), in the same order. */
     final double[] changes = {Double.NaN, Double.NaN, Double.NaN, Double.NaN};
-    volatile long pricesAt, weatherAt;
+    volatile long pricesAt, weatherAt, aviationAt;
+    /** Latest METAR and TAF of the aerodrome, on one line each; empty when there is none. */
+    volatile String metar = "", taf = "";
     volatile Weather weather = new Weather();
 
     private final SharedPreferences cache;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Listener> listeners = new ArrayList<>();
-    private volatile boolean fetchingPrices, fetchingWeather;
+    private volatile boolean fetchingPrices, fetchingWeather, fetchingAviation;
 
     private HomeData(Context c) {
         cache = c.getSharedPreferences("homedata", Context.MODE_PRIVATE);
@@ -98,6 +104,11 @@ final class HomeData {
             String w = cache.getString("weather", null);
             if (w != null) weather = parseWeather(w);
             weatherAt = cache.getLong("weatherAt", 0);
+            if (!AERODROME.isEmpty() && AERODROME.equals(cache.getString("aviationIcao", ""))) {
+                metar = cache.getString("metar", "");
+                taf = cache.getString("taf", "");
+                aviationAt = cache.getLong("aviationAt", 0);
+            }
         } catch (Exception ignored) {}
     }
 
@@ -140,6 +151,30 @@ final class HomeData {
                 }
             });
         }
+        if (!AERODROME.isEmpty() && !fetchingAviation && (now - aviationAt > AVIATION_EVERY || now < aviationAt)) {
+            fetchingAviation = true;
+            io.execute(() -> {
+                try {
+                    String m = oneLine(get(String.format(AVIATION_URL, "metar")));
+                    String t = oneLine(get(String.format(AVIATION_URL, "taf")));
+                    metar = m;
+                    taf = t;
+                    aviationAt = System.currentTimeMillis();
+                    cache.edit().putString("aviationIcao", AERODROME).putString("metar", m).putString("taf", t)
+                            .putLong("aviationAt", aviationAt).apply();
+                    notifyListeners();
+                } catch (Exception e) {
+                    AppLog.w("metar/taf: " + e.getMessage());
+                } finally {
+                    fetchingAviation = false;
+                }
+            });
+        }
+    }
+
+    /** The service answers one report over several indented lines (and nothing, HTTP 204, when there is none). */
+    private static String oneLine(String body) {
+        return body.trim().replaceAll("\\s+", " ");
     }
 
     private void notifyListeners() {
@@ -209,6 +244,7 @@ final class HomeData {
         c.setReadTimeout(6000);
         c.setRequestProperty("User-Agent", "FreeMyTV");
         try {
+            if (c.getResponseCode() == 204) return "";
             if (c.getResponseCode() != 200) throw new IOException("HTTP " + c.getResponseCode());
             try (InputStream in = c.getInputStream()) {
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
